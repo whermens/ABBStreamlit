@@ -3,7 +3,17 @@ from tqdm import tqdm
 import streamlit as st
 import io
 from datetime import datetime
+import sys
 
+# Redirect print statements to avoid connection issues
+class SuppressPrints:
+    def write(self, text):
+        pass
+    def flush(self):
+        pass
+
+# Suppress print statements by redirecting to null
+sys.stdout = SuppressPrints()
 
 # Function to handle prefixes that would create too many columns
 def limit_prefix_columns(df, prefixes_to_limit):
