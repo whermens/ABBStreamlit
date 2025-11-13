@@ -1,19 +1,7 @@
 import pandas as pd
-from tqdm import tqdm
 import streamlit as st
 import io
 from datetime import datetime
-import sys
-
-# Redirect print statements to avoid connection issues
-class SuppressPrints:
-    def write(self, text):
-        pass
-    def flush(self):
-        pass
-
-# Suppress print statements by redirecting to null
-sys.stdout = SuppressPrints()
 
 # Function to handle prefixes that would create too many columns
 def limit_prefix_columns(df, prefixes_to_limit):
@@ -128,7 +116,7 @@ def transform_dataframe(df):
     if header_prefixes:
         header_columns = {}
 
-        for prefix in tqdm(header_prefixes, desc="Processing _Header patterns", smoothing=0.0):
+        for prefix in header_prefixes:
             header_col = f"{prefix}_Header"
             value_col = f"{prefix}_Value"
             unit_col = f"{prefix}_Unit"
@@ -205,7 +193,7 @@ def transform_dataframe(df):
     # Process _Enum Value patterns - collect all columns first, then concat once
     if enum_prefixes:
         enum_columns = {}
-        for prefix in tqdm(enum_prefixes, desc="Processing _Enum Value patterns", smoothing=0.0):
+        for prefix in enum_prefixes:
             enum_col = f"{prefix}_Enum Value"
             new_col_name = prefix
             enum_columns[new_col_name] = df[enum_col]
@@ -215,6 +203,7 @@ def transform_dataframe(df):
         new_df = pd.concat([new_df, enum_df], axis=1)
 
     return new_df
+
 def consolidate_by_product(df):
     """
     Consolidate multiple rows per Product ID into a single row.
@@ -257,7 +246,7 @@ def consolidate_by_product(df):
 
         print(f"Processing {len(cols_to_concat)} columns that need value concatenation...")
 
-        for col in tqdm(cols_to_concat, desc="Concatenating multi-value columns", smoothing=0.0):
+        for col in cols_to_concat:
             # For this column, get mask of products that need concatenation
             products_to_concat = needs_concat[col][needs_concat[col]].index
 
