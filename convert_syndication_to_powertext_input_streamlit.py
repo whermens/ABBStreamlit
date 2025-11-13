@@ -16,8 +16,6 @@ def limit_prefix_columns(df, prefixes_to_limit):
     Returns:
         Modified DataFrame with limited prefixes cleaned up
     """
-    print(f"\nLimiting column explosion for prefixes: {prefixes_to_limit}")
-
     # Track which prefixes were actually limited
     columns_to_remove = set()
     columns_to_rename = {}
@@ -27,8 +25,6 @@ def limit_prefix_columns(df, prefixes_to_limit):
         value_col = f"{prefix}_Value"
 
         if header_col in df.columns:
-            print(f"  Limiting {prefix}: keeping only {value_col} (renamed to {prefix})")
-
             # Rename _Value column to just the prefix name
             if value_col in df.columns:
                 columns_to_rename[value_col] = prefix
@@ -48,17 +44,15 @@ def limit_prefix_columns(df, prefixes_to_limit):
     # Rename the _Value columns
     if columns_to_rename:
         df = df.rename(columns=columns_to_rename)
-        print(f"  Renamed columns: {columns_to_rename}")
 
     # Remove the other related columns
     if columns_to_remove:
         df = df.drop(columns=list(columns_to_remove))
-        print(f"  Removed {len(columns_to_remove)} columns")
 
     return df
 
 # Transform the DataFrame
-def transform_dataframe(df):
+def transform_dataframe(df, progress_callback=None):
     """
     Transform DataFrame columns based on three patterns:
     1. _Header, _Value, _Unit columns -> Create columns for each header value
@@ -105,24 +99,24 @@ def transform_dataframe(df):
     # Regular columns are those not in any pattern
     regular_columns = [col for col in all_columns if col not in pattern_columns]
 
-    print(f"\nFound {len(header_prefixes)} prefixes with _Header pattern: {header_prefixes}")
-    print(f"Found {len(enum_prefixes)} prefixes with _Enum Value pattern: {enum_prefixes}")
-    print(f"Found {len(regular_columns)} regular columns")
-
     # Start building the new DataFrame
     new_df = df[regular_columns].copy()
 
     # Process _Header/_Value/_Unit patterns - collect all columns first, then concat once
     if header_prefixes:
         header_columns = {}
+        total_prefixes = len(header_prefixes)
 
-        for prefix in header_prefixes:
+        for idx, prefix in enumerate(header_prefixes):
+            if progress_callback:
+                progress_callback(f"Processing header patterns: {prefix}", (idx + 1) / (total_prefixes + len(enum_prefixes)))
+
             header_col = f"{prefix}_Header"
             value_col = f"{prefix}_Value"
             unit_col = f"{prefix}_Unit"
 
             # Get unique header values (including NaN for empty headers)
-            unique_headers = df[header_col].unique()  # Don't drop NaN - we want to handle empty headers
+            unique_headers = df[header_col].unique()
 
             # Create a column for each unique header value using vectorized operations
             for header_value in unique_headers:
@@ -193,7 +187,10 @@ def transform_dataframe(df):
     # Process _Enum Value patterns - collect all columns first, then concat once
     if enum_prefixes:
         enum_columns = {}
-        for prefix in enum_prefixes:
+        for idx, prefix in enumerate(enum_prefixes):
+            if progress_callback:
+                progress_callback(f"Processing enum patterns: {prefix}", (len(header_prefixes) + idx + 1) / (len(header_prefixes) + len(enum_prefixes)))
+
             enum_col = f"{prefix}_Enum Value"
             new_col_name = prefix
             enum_columns[new_col_name] = df[enum_col]
@@ -204,32 +201,27 @@ def transform_dataframe(df):
 
     return new_df
 
-def consolidate_by_product(df):
+def consolidate_by_product(df, progress_callback=None):
     """
     Consolidate multiple rows per Product ID into a single row.
     Master/Slave rows are combined by concatenating values with semicolon separator.
     """
-    print("\nConsolidating rows by Product ID...")
-
     # Check if Product ID column exists
     product_id_col = "Product ID (ProductId)"
     if product_id_col not in df.columns:
-        print(f"Warning: {product_id_col} column not found. Skipping consolidation.")
         return df
 
-    print(f"Processing {len(df.columns)} columns for {df[product_id_col].nunique()} unique products...")
+    if progress_callback:
+        progress_callback("Grouping by Product ID...", 0.1)
 
     # Group by Product ID
     grouped = df.groupby(product_id_col, sort=False)
 
-    # Strategy: Use built-in agg functions instead of custom lambda
-    # 1. Get first non-null value for each column
-    print("Getting first non-null value for all columns...")
+    # Get first non-null value for each column
     result_df = grouped.first()
 
-    # 2. Find groups that have multiple different non-null values per column
-    # For those, we need to concatenate with semicolons
-    print("Identifying columns with multiple values per product...")
+    if progress_callback:
+        progress_callback("Finding columns with multiple values...", 0.3)
 
     # Count unique non-null values per group per column
     nunique = grouped.nunique()
@@ -238,15 +230,14 @@ def consolidate_by_product(df):
     needs_concat = nunique > 1
 
     if needs_concat.any().any():
-        total_concat_needed = needs_concat.sum().sum()
-        print(f"Found {total_concat_needed} column-product combinations that need concatenation")
-
         # Only process columns that have at least one multi-value case
         cols_to_concat = needs_concat.any()[needs_concat.any()].index.tolist()
 
-        print(f"Processing {len(cols_to_concat)} columns that need value concatenation...")
+        total_cols = len(cols_to_concat)
+        for idx, col in enumerate(cols_to_concat):
+            if progress_callback and idx % 10 == 0:
+                progress_callback(f"Concatenating multi-value columns ({idx}/{total_cols})...", 0.3 + (0.7 * idx / total_cols))
 
-        for col in cols_to_concat:
             # For this column, get mask of products that need concatenation
             products_to_concat = needs_concat[col][needs_concat[col]].index
 
@@ -258,48 +249,43 @@ def consolidate_by_product(df):
 
     result_df = result_df.reset_index()
 
-    print(f"Consolidated from {len(df)} rows to {len(result_df)} rows")
-
     return result_df
 
-def process_and_save_dataframe(df):
+def process_and_save_dataframe(df, status_callback=None):
     """
     Process a dataframe through the complete transformation pipeline:
     1. Limit columns for specified prefixes
     2. Transform dataframe structure
     3. Consolidate rows by Product ID
-    4. Save to Excel
 
     Args:
         df: Input DataFrame to process
+        status_callback: Optional callback function for progress updates
 
     Returns:
         DataFrame: The consolidated DataFrame
     """
-    # Transform the dataframe
-    print("\n" + "="*80)
-    print("Starting transformation...")
-    print("="*80)
-
     # Limit columns for prefixes that would create too many columns
+    if status_callback:
+        status_callback("Limiting column explosion...", 0.05)
+
     prefixes_to_limit = {'SimplifiedScip', 'Scip', 'Eti9LogAtt', 'Eti8LogAtt', 'Eti7LogAtt'}
     df_limited = limit_prefix_columns(df, prefixes_to_limit)
 
-    df_transformed = transform_dataframe(df_limited)
+    # Transform the dataframe
+    if status_callback:
+        status_callback("Transforming dataframe structure...", 0.1)
+
+    df_transformed = transform_dataframe(df_limited, progress_callback=status_callback)
 
     # Consolidate rows by Product ID
-    print("\n" + "="*80)
-    print("Consolidating rows by Product ID...")
-    print("="*80)
+    if status_callback:
+        status_callback("Consolidating rows by Product ID...", 0.7)
 
-    df_consolidated = consolidate_by_product(df_transformed)
+    df_consolidated = consolidate_by_product(df_transformed, progress_callback=status_callback)
 
-    print("\n" + "="*80)
-    print("Transformation complete!")
-    print("="*80)
-    print(f"\nFinal DataFrame has {len(df_consolidated)} rows and {len(df_consolidated.columns)} columns")
-
-    print("Done!")
+    if status_callback:
+        status_callback("Processing complete!", 1.0)
 
     return df_consolidated
 
@@ -343,42 +329,54 @@ def main():
             with st.expander("Preview Input Data (first 10 rows)"):
                 st.dataframe(df_input.head(10))
 
-            # Automatically process the data
-            status_placeholder = st.empty()
+            # Process button
+            if st.button("🚀 Process Data", type="primary"):
+                try:
+                    # Create progress bar and status text
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
 
-            try:
-                status_placeholder.info("🔄 Processing data... This may take a few minutes.")
+                    def update_progress(message, progress):
+                        status_text.text(message)
+                        progress_bar.progress(progress)
 
-                df_consolidated = process_and_save_dataframe(df_input)
+                    update_progress("Starting processing...", 0.0)
 
-                status_placeholder.success(f"✅ Processing complete! Result: {len(df_consolidated)} rows, {len(df_consolidated.columns)} columns")
+                    df_consolidated = process_and_save_dataframe(df_input, status_callback=update_progress)
 
-                # Show output preview
-                with st.expander("Preview Output Data (first 10 rows)"):
-                    st.dataframe(df_consolidated.head(10))
+                    progress_bar.progress(1.0)
+                    status_text.empty()
+                    progress_bar.empty()
 
-                # Prepare download
-                with st.spinner("Preparing Excel file for download..."):
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    output_filename = f"syndication_transformed_{timestamp}.xlsx"
+                    st.success(f"✅ Processing complete! Result: {len(df_consolidated)} rows, {len(df_consolidated.columns)} columns")
 
-                    # Convert to Excel in memory
-                    output = io.BytesIO()
-                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                        df_consolidated.to_excel(writer, index=False, sheet_name='Transformed Data')
-                    output.seek(0)
+                    # Show output preview
+                    with st.expander("Preview Output Data (first 10 rows)", expanded=True):
+                        st.dataframe(df_consolidated.head(10))
 
-                # Download button
-                st.download_button(
-                    label="⬇️ Download Transformed Excel",
-                    data=output,
-                    file_name=output_filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                    # Prepare download
+                    with st.spinner("Preparing Excel file for download..."):
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        output_filename = f"syndication_transformed_{timestamp}.xlsx"
 
-            except Exception as e:
-                status_placeholder.error(f"❌ Error processing data: {str(e)}")
-                st.exception(e)
+                        # Convert to Excel in memory
+                        output = io.BytesIO()
+                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                            df_consolidated.to_excel(writer, index=False, sheet_name='Transformed Data')
+                        output.seek(0)
+
+                    # Download button
+                    st.download_button(
+                        label="⬇️ Download Transformed Excel",
+                        data=output,
+                        file_name=output_filename,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary"
+                    )
+
+                except Exception as e:
+                    st.error(f"❌ Error processing data: {str(e)}")
+                    st.exception(e)
 
         except Exception as e:
             st.error(f"❌ Error reading file: {str(e)}")
