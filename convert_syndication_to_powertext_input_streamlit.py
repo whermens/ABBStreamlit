@@ -325,6 +325,11 @@ def main():
 
             st.success(f"✅ File loaded successfully: {len(df_input)} rows, {len(df_input.columns)} columns")
 
+            # Show file size warning
+            file_size_mb = uploaded_file.size / (1024 * 1024)
+            if file_size_mb > 50:
+                st.warning(f"⚠️ Large file detected ({file_size_mb:.1f} MB). Processing may take several minutes.")
+
             # Show input preview
             with st.expander("Preview Input Data (first 10 rows)"):
                 st.dataframe(df_input.head(10))
@@ -337,12 +342,28 @@ def main():
                     status_text = st.empty()
 
                     def update_progress(message, progress):
-                        status_text.text(message)
-                        progress_bar.progress(progress)
+                        try:
+                            status_text.text(message)
+                            progress_bar.progress(min(progress, 1.0))
+                        except Exception as e:
+                            st.warning(f"Progress update error: {e}")
 
                     update_progress("Starting processing...", 0.0)
 
-                    df_consolidated = process_and_save_dataframe(df_input, status_callback=update_progress)
+                    # Add error context
+                    try:
+                        df_consolidated = process_and_save_dataframe(df_input, status_callback=update_progress)
+                    except KeyError as e:
+                        st.error(f"❌ Column not found: {e}")
+                        st.info("This might mean your Excel file has a different structure than expected.")
+                        raise
+                    except MemoryError:
+                        st.error("❌ Out of memory! The file is too large to process on Streamlit Cloud.")
+                        st.info("Try processing a smaller subset of data or run locally.")
+                        raise
+                    except Exception as e:
+                        st.error(f"❌ Unexpected error during processing: {type(e).__name__}")
+                        raise
 
                     progress_bar.progress(1.0)
                     status_text.empty()
@@ -376,11 +397,14 @@ def main():
 
                 except Exception as e:
                     st.error(f"❌ Error processing data: {str(e)}")
-                    st.exception(e)
+                    with st.expander("🔍 Full Error Details"):
+                        st.exception(e)
+                    st.info("💡 Try uploading a smaller file or check that your file has the expected column structure.")
 
         except Exception as e:
             st.error(f"❌ Error reading file: {str(e)}")
-            st.exception(e)
+            with st.expander("🔍 Full Error Details"):
+                st.exception(e)
 
     else:
         st.info("👆 Please upload an Excel file to get started")
